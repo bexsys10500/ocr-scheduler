@@ -8,6 +8,11 @@ import 'package:ocr_task_scheduler/pages/gallery_screen.dart';
 import 'package:ocr_task_scheduler/theme/color.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:ocr_task_scheduler/data/download_db.dart';
+
+
+// ถ้าในโปรเจกต์มีตัว supabase อยู่แล้ว ลบบรรทัดนี้ออก
+final supabase = Supabase.instance.client;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -45,33 +50,39 @@ class _HomeScreenState extends State<HomeScreen> {
         channel = supabase
             .channel('task_lists_changes')
             .onPostgresChanges(
-              event: PostgresChangeEvent.insert,
+              event: PostgresChangeEvent.all,
               schema: 'public',
               table: 'task_lists',
               callback: (payload) async {
+                print('🔔 Realtime insert: ${payload.newRecord}');
+
                 final filePath = payload.newRecord['file_path'];
+                if (filePath == null) {
+                  print('⚠️ file_path is null in payload');
+                  return;
+                }
+
                 final signedUrl = await getPrivateImageUrl(filePath);
 
                 if (signedUrl != null) {
-                  // Step 2: Save path
-                  final savePath = await getMacDownloadsPath(
-                    filePath.split('/').last,
-                  );
-                  // Step 3: Download
+                  final filename = filePath.split('/').last;
+                  final savePath = await getDownloadPath(filename);
+                  print('📁 Will save to: $savePath');
                   await downloadFile(signedUrl, savePath);
+                } else {
+                  print('⚠️ signedUrl is null');
                 }
               },
-              // print('Got new data: ${payload.newRecord}');
             )
             .subscribe();
 
-        print("Subscribed to realtime");
+        print("✅ Subscribed to realtime");
       } else {
         stopTimer();
         // DISCONNECT → UNSUBSCRIBE
         if (channel != null) {
           supabase.removeChannel(channel!);
-          print("Unsubscribed from realtime");
+          print("🛑 Unsubscribed from realtime");
           channel = null;
         }
       }
@@ -82,43 +93,89 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<String?> getPrivateImageUrl(String path) async {
     try {
-      final String signedUrl = await supabase.storage
-          .from("bexsys-ocr")
-          .createSignedUrl(path, 60);
+      final String signedUrl =
+          await supabase.storage.from("bexsys-ocr").createSignedUrl(path, 60);
+      print('🔐 Signed URL created');
       return signedUrl;
-    } catch (e) {
-      print(e);
+    } catch (e, st) {
+      print('❌ Error createSignedUrl: $e\n$st');
       return null;
     }
   }
 
-  Future<void> downloadFile(String url, String savePath) async {
-    final response = await http.get(Uri.parse(url));
+    Future<void> downloadFile(String url, String savePath) async {
+    try {
+      print('⬇️ Start downloading: $url');
+      final response = await http.get(Uri.parse(url));
 
-    if (response.statusCode == 200) {
-      final file = File(savePath);
-      await file.writeAsBytes(response.bodyBytes);
-      print("Downloaded to: $savePath");
-    } else {
-      print("Download failed: ${response.statusCode}");
+      if (response.statusCode == 200) {
+        final file = File(savePath);
+
+        // สร้างโฟลเดอร์ปลายทางให้ก่อน เผื่อยังไม่ถูกสร้าง
+        await file.parent.create(recursive: true);
+
+        await file.writeAsBytes(response.bodyBytes);
+        print("✅ Downloaded to: $savePath");
+
+        // ดึงชื่อไฟล์จาก path
+        final fileName = Platform.isWindows
+            ? savePath.split('\\').last
+            : savePath.split('/').last;
+
+        // 📝 log ลง sqlite3
+        await DownloadDb.instance.insertDownload(
+          fileName: fileName,
+          localPath: savePath,
+        );
+
+        print('📝 Logged to sqlite3: $fileName → $savePath');
+      } else {
+        print("❌ Download failed: ${response.statusCode}");
+      }
+    } catch (e, st) {
+      print('❌ Download error: $e\n$st');
     }
   }
 
+
   Future<void> initPath() async {
-    final dir = await getApplicationSupportDirectory();
-    setState(() {
-      supportPath = dir.path;
-    });
+    // ตั้งค่า default path ครั้งแรก
+    if (Platform.isWindows) {
+      final home = Platform.environment['USERPROFILE'] ?? 'C:\\';
+      final defaultDownloads = "$home\\Downloads";
+      setState(() {
+        supportPath = defaultDownloads;
+      });
+      print('💾 initPath (Windows) = $supportPath');
+    } else {
+      final dir = await getApplicationSupportDirectory();
+      setState(() {
+        supportPath = dir.path;
+      });
+      print('💾 initPath (Other) = $supportPath');
+    }
   }
 
-  Future<String> getMacDownloadsPath(String filename) async {
-    final dir = await getApplicationSupportDirectory();
-    return "${dir.path}/$filename";
-  }
+  /// ใช้ path จาก supportPath ถ้ามี (แก้จาก popup)
+  /// ถ้าไม่มีก็ใช้ default ตาม OS
+  Future<String> getDownloadPath(String filename) async {
+    // ถ้า user แก้ path ผ่าน popup แล้ว → ใช้อันนี้เป็นหลัก
+    if (supportPath != null && supportPath!.isNotEmpty) {
+      if (Platform.isWindows) {
+        return "${supportPath!}\\$filename";
+      } else {
+        return "${supportPath!}/$filename";
+      }
+    }
 
-  String getWindowsDownloadsPath(String filename) {
-    final home = Platform.environment['USERPROFILE'];
-    return "$home\\Downloads\\$filename";
+    // ถ้ายังไม่ได้แก้ path เลย → default ตาม OS
+    if (Platform.isWindows) {
+      final home = Platform.environment['USERPROFILE'] ?? 'C:\\';
+      return "$home\\Downloads\\$filename";
+    } else {
+      final dir = await getApplicationSupportDirectory();
+      return "${dir.path}/$filename";
+    }
   }
 
   @override
@@ -154,11 +211,11 @@ class _HomeScreenState extends State<HomeScreen> {
           child: CircleAvatar(
             radius: 15,
             backgroundColor: AppColors.secondary,
-            backgroundImage: AssetImage("assets/icons/bexsys.png"),
+            backgroundImage: const AssetImage("assets/icons/bexsys.png"),
           ),
         ),
         centerTitle: true,
-        title: Column(
+        title: const Column(
           children: [
             Text(
               "Task Scheduler",
@@ -172,20 +229,59 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           PopupMenuButton<String>(
-            icon: HugeIcon(icon: HugeIcons.strokeRoundedMoreHorizontal),
+            icon: const HugeIcon(icon: HugeIcons.strokeRoundedMoreHorizontal),
             onSelected: (value) {
-              // user selected menu item value
               if (value == 'gallery') {
-                // do something
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (BuildContext context) => GalleryScreen(),
+                    builder: (BuildContext context) => const GalleryScreen(),
                   ),
                 );
               } else if (value == 'editPath') {
+                // 🔹 Popup แก้ไข path
+                final TextEditingController pathController =
+                    TextEditingController(
+                  text: supportPath ?? '',
+                );
+
+                showDialog(
+                  context: context,
+                  builder: (context) {
+                    return AlertDialog(
+                      title: const Text("Edit download path"),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      content: TextField(
+                        controller: pathController,
+                        decoration: const InputDecoration(
+                          labelText: "Path",
+                          hintText: r"C:\Users\YourName\Downloads",
+                          border: OutlineInputBorder(),
+                        ),
+                        autofocus: true,
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text("Cancel"),
+                        ),
+                        ElevatedButton(
+                          onPressed: () {
+                            setState(() {
+                              supportPath = pathController.text.trim();
+                            });
+                            print('✏️ supportPath changed to: $supportPath');
+                            Navigator.pop(context);
+                          },
+                          child: const Text("Save"),
+                        ),
+                      ],
+                    );
+                  },
+                );
               } else if (value == 'signout') {
-                // do something else
                 showDialog(
                   context: context,
                   builder: (context) {
@@ -198,7 +294,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
-                          content: const Text("Are you sure want to sign out?"),
+                          content: const Text(
+                              "Are you sure want to sign out?"),
                           actions: [
                             TextButton(
                               onPressed: () => Navigator.pop(context),
@@ -242,16 +339,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }
             },
-            itemBuilder: (context) => <PopupMenuEntry<String>>[
-              const PopupMenuItem<String>(
+            itemBuilder: (context) => const <PopupMenuEntry<String>>[
+              PopupMenuItem<String>(
                 value: 'gallery',
                 child: Text('Gallery'),
               ),
-              const PopupMenuItem<String>(
+              PopupMenuItem<String>(
                 value: 'editPath',
                 child: Text('Edit Path'),
               ),
-              const PopupMenuItem<String>(
+              PopupMenuItem<String>(
                 value: 'signout',
                 child: Text('Sign out'),
               ),
@@ -294,7 +391,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 onPressed: () {
                   showDialog(
                     context: context,
-                    barrierDismissible: true, // if touch close dialog
+                    barrierDismissible: true,
                     builder: (context) {
                       return AlertDialog(
                         shape: RoundedRectangleBorder(
@@ -324,9 +421,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               Navigator.pop(context);
                             },
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: connected
-                                  ? Colors.red
-                                  : Colors.green,
+                              backgroundColor:
+                                  connected ? Colors.red : Colors.green,
                             ),
                             child: Text(connected ? "Turn Off" : "Turn On"),
                           ),
@@ -351,18 +447,22 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Text(
                   connected ? "Connected" : "Disconnect",
-                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 18),
                 ),
-                SizedBox(height: 20),
+                const SizedBox(height: 20),
                 Text(formatTime(seconds)),
-                SizedBox(height: 20),
-                Text(
+                const SizedBox(height: 20),
+                const Text(
                   "Your file has been saved to:",
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.black54),
                 ),
-                SizedBox(height: 10),
-                Text(supportPath ?? "", textAlign: TextAlign.center),
+                const SizedBox(height: 10),
+                Text(
+                  supportPath ?? "",
+                  textAlign: TextAlign.center,
+                ),
               ],
             ),
           ),

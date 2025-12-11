@@ -14,7 +14,7 @@ Future<void> main() async {
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF0Ymdmd2t6bXdkeGRlZ2d0c3RuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI3NDIwNjYsImV4cCI6MjA3ODMxODA2Nn0.y934P-nczOB3k_63lIugSLlf8_sWBFZ0kClTaEab5IA",
   );
   if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-    window_size.setWindowMinSize(const Size(800, 600)); // MIN SIZE
+    window_size.setWindowMinSize(const Size(800, 700)); // MIN SIZE
     window_size.setWindowMaxSize(Size.infinite); // Optional
   }
   runApp(const MyApp());
