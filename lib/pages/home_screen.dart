@@ -17,6 +17,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  String? supportPath;
   RealtimeChannel? channel;
   bool connected = false;
   bool signOutLoading = false;
@@ -44,7 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
         channel = supabase
             .channel('task_lists_changes')
             .onPostgresChanges(
-              event: PostgresChangeEvent.all,
+              event: PostgresChangeEvent.insert,
               schema: 'public',
               table: 'task_lists',
               callback: (payload) async {
@@ -103,6 +104,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> initPath() async {
+    final dir = await getApplicationSupportDirectory();
+    setState(() {
+      supportPath = dir.path;
+    });
+  }
+
   Future<String> getMacDownloadsPath(String filename) async {
     final dir = await getApplicationSupportDirectory();
     return "${dir.path}/$filename";
@@ -111,6 +119,12 @@ class _HomeScreenState extends State<HomeScreen> {
   String getWindowsDownloadsPath(String filename) {
     final home = Platform.environment['USERPROFILE'];
     return "$home\\Downloads\\$filename";
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    initPath();
   }
 
   @override
@@ -169,6 +183,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     builder: (BuildContext context) => GalleryScreen(),
                   ),
                 );
+              } else if (value == 'editPath') {
               } else if (value == 'signout') {
                 // do something else
                 showDialog(
@@ -231,6 +246,10 @@ class _HomeScreenState extends State<HomeScreen> {
               const PopupMenuItem<String>(
                 value: 'gallery',
                 child: Text('Gallery'),
+              ),
+              const PopupMenuItem<String>(
+                value: 'editPath',
+                child: Text('Edit Path'),
               ),
               const PopupMenuItem<String>(
                 value: 'signout',
@@ -336,6 +355,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 SizedBox(height: 20),
                 Text(formatTime(seconds)),
+                SizedBox(height: 20),
+                Text(
+                  "Your file has been saved to:",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.black54),
+                ),
+                SizedBox(height: 10),
+                Text(supportPath ?? "", textAlign: TextAlign.center),
               ],
             ),
           ),
